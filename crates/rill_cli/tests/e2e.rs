@@ -4077,6 +4077,46 @@ fn a_type_error_names_the_file_it_is_in() {
     assert!(said.contains("other.rill: type error"), "said: {said}");
 }
 
+/// A strand parked with a `timeout` is a reason to look at the poller, and looking
+/// is a system call. Made at every switch, a program with one such strand ran six
+/// hundred times slower than one without. Measured as a ratio, so that it says
+/// the same on a slow machine.
+#[test]
+fn a_parked_strand_costs_the_others_nothing_much() {
+    let out = run_source(
+        "parked_strand",
+        "fn sleeper(stop) =\n  \
+           v = select\n    \
+             recv(stop) -> 1\n    \
+             timeout(60000) -> 0\n  \
+           v\n\
+         \n\
+         fn spin(n) =\n  \
+           if n == 0 then 0\n  \
+           else\n    \
+             yield()\n    \
+             spin(n - 1)\n\
+         \n\
+         fn timed() =\n  \
+           spawn spin(100000)\n  \
+           t = now_millis()\n  \
+           spin(100000)\n  \
+           now_millis() - t\n\
+         \n\
+         fn main() =\n  \
+           stop = channel(1)\n  \
+           spawn sleeper(stop)\n  \
+           yield()\n  \
+           with_one = timed()\n  \
+           send(stop, 1)\n  \
+           yield()\n  \
+           println(int_to_str(with_one))\n  \
+           println(int_to_str(timed()))\n",
+    );
+    let times: Vec<u64> = out.lines().map(|l| l.parse().unwrap()).collect();
+    assert!(times[0] < times[1] * 20 + 50, "with a strand parked {} ms, without {} ms", times[0], times[1]);
+}
+
 #[test]
 fn binaries_are_small_like_c() {
     require_fresh_runtime();

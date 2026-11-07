@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — a yield that looked at the poller every time
+
+`yield()` looked for parked strands on every call, which is what 0.16.2 stopped
+the worker doing between strands. With one strand parked on a `timeout`, four
+hundred thousand switches took 4.9 seconds rather than 8 milliseconds. Both now
+look every 512.
+
 ## Unreleased — the tests, on the machines they are for
 
 There is continuous integration now, on Linux on both architectures and on Apple

@@ -3047,9 +3047,7 @@ pub unsafe extern "C" fn rill_yield() {
         return;
     }
     let w = me();
-    if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
-        poll_network(w, false);
-    }
+    poll_now_and_then(w);
     lock_runq(w);
     let waiting = !(*w).runq.head.is_null();
     unlock_runq(w);
@@ -8564,13 +8562,28 @@ pub unsafe extern "C" fn rill_spawn(code: extern "C" fn(*mut u8), env: *mut u8) 
 
 /// Runs strands until the program is done. Worker 0 is the thread that
 /// called `main`; the rest are started only when `RILL_THREADS` asks for them.
+/// Strands taken since the last look, for each worker. Only the worker counts,
+/// so nothing guards its slot.
+static mut POLLED_AFTER: [u32; 256] = [0; 256];
+
+const POLL_EVERY: u32 = 512;
+
+/// Often enough that a strand that never blocks cannot starve one parked on a
+/// descriptor, and no oftener: a look is a system call.
+unsafe fn poll_now_and_then(w: *mut Worker) {
+    let slot = &mut POLLED_AFTER[(*w).index & 255];
+    *slot += 1;
+    if *slot >= POLL_EVERY && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+        *slot = 0;
+        poll_network(w, false);
+    }
+}
+
 unsafe fn worker_loop(w: *mut Worker) {
     // Consecutive polls that found nothing anywhere; a genuine deadlock keeps
     // reporting the same thing, whereas a momentary gap between one worker
     // queueing work and another looking for it does not.
     let mut idle_rounds = 0u32;
-    let mut polled_after = 0u32;
-    const POLL_EVERY: u32 = 512;
     loop {
         // Asked before taking work, not only when there is none left. A single
         // worker already behaved this way — the one running `main` returns the
@@ -8589,11 +8602,7 @@ unsafe fn worker_loop(w: *mut Worker) {
         // `select` with a `timeout` arm counts as parked, a program looping
         // on one paid a system call per switch, and a message broker built
         // that way ran at a twenty-fifth of its speed.
-        polled_after += 1;
-        if polled_after >= POLL_EVERY && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
-            polled_after = 0;
-            poll_network(w, false);
-        }
+        poll_now_and_then(w);
         lock_runq(w);
         let mut g = (*w).runq.pop();
         unlock_runq(w);
