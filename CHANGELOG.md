@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased — a buffered socket is paid for before a strand waits
+## 0.16.0 — what a select kept, and what a strand owed
+
+### A select arm that answered with what it took
+
+`m = recv(ch) -> m` left every value it received with one reference more than
+it had owners. A select arm releases what it bound unless that value is its
+answer, on the reasoning that the answer leaves with the `select`; but reading
+a name takes a reference of its own, so it was the arm's reference that was
+excused and the read's that left, and nothing ever gave the first one back. The
+rule is now the plain one: anything still listed at the end of an arm was read
+rather than moved, and is released.
+
+An arm that only reads what it took was fixed earlier, and that fix is where the
+exception came from. This one is the spelling a loop reaches for when it merges
+two channels, and a message broker written that way was losing about seventy
+bytes on every frame it read, heartbeats included.
+
+### A buffered socket is paid for before a strand waits
 
 `sock_buffered` flushed from inside a park, and for every strand's sockets
 rather than the parking strand's own. A full socket then parked a strand that
@@ -1474,21 +1491,6 @@ assembler's literal rather than an operand reference, so an immediate is
 written the way the manual has it.
 
 wasm refuses either kind outright.
-
-## Unreleased — a select arm that answered with what it took
-
-`m = recv(ch) -> m` left every value it received with one reference more than
-it had owners. A select arm releases what it bound unless that value is its
-answer, on the reasoning that the answer leaves with the `select`; but reading
-a name takes a reference of its own, so it was the arm's reference that was
-excused and the read's that left, and nothing ever gave the first one back. The
-rule is now the plain one: anything still listed at the end of an arm was read
-rather than moved, and is released.
-
-An arm that only reads what it took was fixed earlier, and that fix is where the
-exception came from. This one is the spelling a loop reaches for when it merges
-two channels, and a message broker written that way was losing about seventy
-bytes on every frame it read, heartbeats included.
 
 ## Unreleased — bytes back from C, and a name two libraries wanted
 
