@@ -10410,9 +10410,55 @@ mod net {
         /// case — a connection's first wait — to one syscall.
         /// Registrations here are still one per wait, so there is nothing to
         /// forget when a descriptor closes.
-        pub(super) unsafe fn poller_forget(_fd: i32) {}
+        pub(super) unsafe fn poller_forget(fd: i32) {
+            if (fd as usize) < TWINS {
+                let twin = WRITE_TWIN[fd as usize].swap(0, core::sync::atomic::Ordering::AcqRel);
+                if twin != 0 {
+                    close(twin - 1);
+                }
+            }
+        }
+
+        /// A set holds one entry per descriptor and each entry names one
+        /// strand, so a strand waiting to write on a socket another strand is
+        /// waiting to read would replace that strand's wait, and it would never
+        /// be woken. kqueue keeps a read and a write apart by itself. Here the
+        /// write goes through a duplicate, which is the same socket and a
+        /// separate entry, made the first time a write has to wait.
+        const TWINS: usize = 65536;
+        static WRITE_TWIN: [core::sync::atomic::AtomicI32; TWINS] =
+            [const { core::sync::atomic::AtomicI32::new(0) }; TWINS];
+
+        unsafe fn write_twin(fd: i32) -> i32 {
+            const F_DUPFD_CLOEXEC: i32 = 1030;
+            if fd as usize >= TWINS {
+                return fd;
+            }
+            let slot = &WRITE_TWIN[fd as usize];
+            let held = slot.load(core::sync::atomic::Ordering::Acquire);
+            if held != 0 {
+                return held - 1;
+            }
+            let twin = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+            if twin < 0 {
+                return fd;
+            }
+            match slot.compare_exchange(
+                0,
+                twin + 1,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => twin,
+                Err(other) => {
+                    close(twin);
+                    other - 1
+                }
+            }
+        }
 
         pub(super) unsafe fn poller_arm(ep: i32, fd: i32, writable: bool, g: *mut G) -> bool {
+            let fd = if writable { write_twin(fd) } else { fd };
             let mut ev = EpollEvent {
                 events: (if writable { EPOLLOUT } else { EPOLLIN }) | EPOLLONESHOT,
                 data: g as u64,

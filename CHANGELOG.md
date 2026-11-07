@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.1 — a write that took a read's place
+
+On Linux a strand waiting to write on a socket replaced the wait of a strand
+reading it: an epoll set has one entry per descriptor, and an entry names one
+strand. The reader was never woken, and a program with a strand on each end of a
+socket stopped as soon as that socket filled. kqueue keeps the two apart, so it
+never happened on a Mac. A write that has to wait now goes through a duplicate
+of the descriptor, which is a separate entry, and which goes when the socket
+does.
+
 ## 0.16.0 — what a select kept, and what a strand owed
 
 ### A select arm that answered with what it took

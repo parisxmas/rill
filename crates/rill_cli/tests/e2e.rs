@@ -3980,6 +3980,82 @@ fn main() =
     assert_eq!(String::from_utf8_lossy(&run.stdout), "12800000\n");
 }
 
+/// One strand reading a socket and another writing it, and the socket full, so
+/// both are parked on the same descriptor. The reader still has to be woken by
+/// what arrives: on Linux the writer's wait used to replace it in the epoll set.
+/// Run with a deadline, because the failure is that it does not stop.
+#[test]
+fn a_write_that_waits_leaves_the_read_waiting_too() {
+    let src = r#"fn filler(fd, n) =
+  if n == 0 then 0
+  else
+    sock_write(fd, "0123456789012345678901234567890123456789012345678901234567890123")
+    filler(fd, n - 1)
+
+fn listener(fd, out) =
+  send(out, sock_read(fd))
+
+fn drain(fd, got, want) =
+  if got >= want then got
+  else
+    s = sock_read(fd)
+    if str_len(s) == 0 then got else drain(fd, got + str_len(s), want)
+
+fn serve(server, out) =
+  match accept_on(server)
+    Ok(conn) ->
+      spawn listener(conn, out)
+      spawn filler(conn, 200000)
+      0
+    Err(e) -> 0
+
+fn main() =
+  out = channel(1)
+  match listen_on(0)
+    Err(e) -> println(e)
+    Ok(server) ->
+      spawn serve(server, out)
+      match connect_to("127.0.0.1", sock_port(server))
+        Err(e) -> println(e)
+        Ok(c) ->
+          sleep_ms(300)
+          sock_write(c, "hello")
+          println(recv(out))
+          println(int_to_str(drain(c, 0, 12800000)))
+"#;
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-twin-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let source = out_dir.join("twin.rill");
+    std::fs::write(&source, src).unwrap();
+    let exe = out_dir.join("twin");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+
+    let mut child = Command::new(&exe)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to run produced executable");
+    let started = std::time::Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(30) {
+            child.kill().unwrap();
+            panic!("still running after thirty seconds");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let run = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "hello\n12800000\n");
+}
+
 #[test]
 fn binaries_are_small_like_c() {
     require_fresh_runtime();
