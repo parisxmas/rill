@@ -3898,6 +3898,9 @@ struct Ctx {
 #[repr(C)]
 struct G {
     ctx: Ctx,
+    /// The buffered socket this strand has written to and not flushed, as its
+    /// descriptor plus one, or 0.
+    owes: i32,
     /// Stack bytes copied out while parked (spawned strands only).
     saved: *mut u8,
     saved_len: usize,
@@ -4285,6 +4288,7 @@ unsafe extern "C" fn g_entry() {
     let w = me();
     let g = (*w).current;
     ((*g).code)((*g).env);
+    strand_pays();
     rill_env_release((*g).env);
     (*g).dead = true;
     ctx_switch(&mut (*g).ctx, &(*w).sched_ctx);
@@ -4329,6 +4333,7 @@ unsafe fn init_g(g: *mut G, code: extern "C" fn(*mut u8), env: *mut u8) {
     (*g).next = core::ptr::null_mut();
     (*g).item = [0; 2];
     (*g).dead = false;
+    (*g).owes = 0;
     (*g).started = false;
     (*g).home = 0;
     (*g).selected = -1;
@@ -4427,10 +4432,33 @@ unsafe fn make_ready(g: *mut G) {
 
 /// Parks the current strand; the scheduler saves its stack once control
 /// returns. Callers must have released the scheduler lock.
+/// Whether the running strand has written to a buffered socket and not
+/// flushed it.
+///
+/// A strand has to pay that before it starts to wait and not while it waits:
+/// paying may park it on the socket, and a strand queued on a channel that
+/// parks on something else has two waits and the state for one. A value handed
+/// to it then goes nowhere. It is only ever its own debt, because writing out
+/// somebody else's would leave this strand standing behind that strand's client.
+#[cfg(not(any(target_os = "wasi", target_os = "none")))]
+unsafe fn strand_owes() -> bool {
+    (*(*me()).current).owes != 0
+}
+
+#[cfg(any(target_os = "wasi", target_os = "none"))]
+unsafe fn strand_owes() -> bool {
+    false
+}
+
+#[cfg(not(any(target_os = "wasi", target_os = "none")))]
+unsafe fn strand_pays() {
+    net::pay_what_is_owed();
+}
+
+#[cfg(any(target_os = "wasi", target_os = "none"))]
+unsafe fn strand_pays() {}
+
 unsafe fn block_current() {
-    // Nothing a program has written waits on the program while it does.
-    #[cfg(not(any(target_os = "wasi", target_os = "none")))]
-    net::flush_pending();
     let w = me();
     let g = (*w).current;
     ctx_switch(&mut (*g).ctx, &(*w).sched_ctx);
@@ -5114,6 +5142,11 @@ pub unsafe extern "C" fn rill_chan_send(p: *mut u8, a: u64, b: u64) {
         unlock();
         return;
     }
+    if strand_owes() {
+        unlock();
+        strand_pays();
+        return rill_chan_send(p, a, b);
+    }
     let g = (*me()).current;
     (*g).selected = -1;
     (*g).waiter = Waiter { next: core::ptr::null_mut(), g, item: [a, b], case: 0, chan: c, freed_by_close: 0 };
@@ -5148,6 +5181,11 @@ pub unsafe extern "C" fn rill_chan_recv(p: *mut u8) -> TwoWords {
     if (*c).closed != 0 {
         unlock();
         die_on_closed(b"rill: recv on a closed channel - use recv_opt\n");
+    }
+    if strand_owes() {
+        unlock();
+        strand_pays();
+        return rill_chan_recv(p);
     }
     let g = (*me()).current;
     (*g).selected = -1;
@@ -5207,6 +5245,11 @@ pub unsafe extern "C" fn rill_chan_wait(p: *mut u8) -> i8 {
         unlock();
         (*g).taken = [0, 0];
         return 0;
+    }
+    if strand_owes() {
+        unlock();
+        strand_pays();
+        return rill_chan_wait(p);
     }
     (*g).selected = -1;
     (*g).waiter =
@@ -5371,6 +5414,11 @@ pub unsafe extern "C" fn rill_select(
     if has_default != 0 {
         unlock();
         return -1;
+    }
+    if strand_owes() {
+        unlock();
+        strand_pays();
+        return rill_select(cases, n, has_default, slot);
     }
 
     // Nothing is ready: queue up on every channel at once. The nodes live on
@@ -6269,6 +6317,7 @@ mod net {
     /// Parks the current strand until `fd` is readable or writable. The
     /// registration is one-shot, so nothing has to be unregistered afterwards.
     unsafe fn park_on_fd(fd: i32, writable: bool) {
+        pay_what_is_owed();
         rill_flush_out();
         let w = me();
         let g = (*w).current;
@@ -6322,6 +6371,7 @@ mod net {
     /// If the timer cannot be armed at all the worker sleeps instead, which is
     /// worse but is still the duration the caller asked for.
     unsafe fn park_on_timer(ms: i64) {
+        pay_what_is_owed();
         let w = me();
         let g = (*w).current;
         (*g).selected = -1;
@@ -6443,6 +6493,7 @@ mod net {
         // millisecond — a deadline that had not remotely passed, reported as
         // if it had. So the wait is a loop against a deadline rather than one
         // sleep, and only the clock ends it.
+        pay_what_is_owed();
         let deadline = rill_now_nanos() + ms * 1_000_000;
         let w = me();
         let g = (*w).current;
@@ -6736,6 +6787,11 @@ mod net {
                 if (*b).len + total > WBUF_CAP && rill_sock_flush(fd) < 0 {
                     return -1;
                 }
+                let g = (*me()).current;
+                if (*g).owes != fd as i32 + 1 {
+                    pay_what_is_owed();
+                    (*g).owes = fd as i32 + 1;
+                }
                 if (*b).len == 0 && total > 0 {
                     PENDING += 1;
                 }
@@ -6788,9 +6844,6 @@ mod net {
     /// How many buffers hold anything, so a park with nothing pending costs
     /// one compare.
     static mut PENDING: usize = 0;
-    /// Set while the pending buffers are being written out, since writing
-    /// one may park, and a park flushes.
-    static mut FLUSHING: bool = false;
 
     unsafe fn wbuf(fd: i32) -> *mut WBuf {
         let fd = fd as usize;
@@ -6853,22 +6906,16 @@ mod net {
         if send_all(fd as i32, (*b).data, n) { n as i64 } else { -1 }
     }
 
-    /// Every buffer with something in it, written out. Called before a strand
-    /// parks, so nothing a program wrote waits on the program.
-    pub(super) unsafe fn flush_pending() {
-        if PENDING == 0 || FLUSHING || rill_mt != 0 {
-            return;
+    /// What the running strand wrote, written out. It may park, so this comes
+    /// before the strand starts to wait on anything, and the debt is cleared
+    /// first so that the park it may need does not come back here.
+    pub(super) unsafe fn pay_what_is_owed() {
+        let g = (*me()).current;
+        let fd = (*g).owes;
+        if fd != 0 {
+            (*g).owes = 0;
+            rill_sock_flush(fd as i64 - 1);
         }
-        FLUSHING = true;
-        let mut fd = 0usize;
-        while fd < WBUFS_LEN && PENDING > 0 {
-            let b = WBUFS.add(fd);
-            if !(*b).data.is_null() && (*b).len > 0 {
-                rill_sock_flush(fd as i64);
-            }
-            fd += 1;
-        }
-        FLUSHING = false;
     }
 
     /// The same at exit, where there is no strand to park: whatever the

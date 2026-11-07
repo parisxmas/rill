@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — a buffered socket is paid for before a strand waits
+
+`sock_buffered` flushed from inside a park, and for every strand's sockets
+rather than the parking strand's own. A full socket then parked a strand that
+was already queued on a channel, which gave it two waits and the state for one:
+the next value sent to it went nowhere, and the program stopped with nothing
+wrong anywhere. A strand that had nothing to do with that socket could also end
+up standing behind its client.
+
+A strand now owes only what it wrote, and pays it before it starts to wait:
+before it queues on a channel or a `select`, or arms the poller or a timer, and
+when it ends. A channel or `select` starts again afterwards, since anything may
+have changed while it was writing. One writer per buffered socket is assumed,
+as it always was.
+
 ## Unreleased — a select arm that answered with what it took
 
 `m = recv(ch) -> m` left every value it received with one reference more than
