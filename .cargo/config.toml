@@ -1,3 +1,9 @@
 # inkwell/llvm-sys need to find LLVM 21 (installed via `brew install llvm@21`).
 [env]
 LLVM_SYS_211_PREFIX = "/opt/homebrew/opt/llvm@21"
+
+# The runtime walks its own stack for crash reports and `RILL_ALLOC_CHECK`, by
+# frame pointer. Arm and a Mac always have one; on x86-64 Linux `rbp` is otherwise
+# a register like any other, and following what is in it is a segfault.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "force-frame-pointers=yes"]

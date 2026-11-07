@@ -1,0 +1,71 @@
+# The tests, on the machines a Rill program runs on. A runtime has a poller for
+# each of them, and they differ in ways a test on one of them cannot show: three
+# bugs that passed everything on a Mac were found by a broker on Linux.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A leaf has no frame on x86-64 and no link register to find its caller
+          # in, so a crash report there can lose one frame.
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            skip: --skip crash_reports_name_the_frames
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+          - name: macos-arm64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What the compiler needs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 21
+          sudo apt-get install -y llvm-21-dev libpolly-21-dev libzstd-dev zlib1g-dev libssl-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+
+      - name: What the compiler needs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@21 openssl@3
+          echo "LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rill-ci-${{ matrix.name }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rill-ci-${{ matrix.name }}-
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Every test there is
+        # Skipped: a GPU, the wasm runtime and Mac frameworks are not on every
+        # runner; a binary's size and a machine's timers depend on the machine.
+        run: |
+          python3 -m pip install --user --break-system-packages numpy
+          cargo test --release -p rill_cli --test e2e -- --test-threads=2 \
+            --skip opengl_offscreen_triangle \
+            --skip every_example_in_the_repository_compiles \
+            --skip binaries_are_small_like_c \
+            --skip a_machine_keeps_named_timers ${{ matrix.skip }}
