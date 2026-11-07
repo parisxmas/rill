@@ -3828,6 +3828,72 @@ fn reference_counting_frees_everything() {
     );
 }
 
+/// An arm may answer with the very value it took, and that value leaves with
+/// the `select`. Reading it takes a reference, so the arm has to give back the
+/// one the channel gave it: `m = recv(ch) -> m` left every value it received
+/// with one reference more than it had owners, which a broker saw as a leak on
+/// every frame it read. The block form is here because it is not the same path
+/// through the compiler, and the outer value because that one must not be
+/// given back at all.
+#[test]
+fn a_select_arm_gives_back_what_it_answers_with() {
+    let src = "type Box\n  \
+                 Box(s: Str)\n  \
+                 Empty\n\
+               \n\
+               fn size(b) = match b\n  \
+                 Box(s) -> str_len(s)\n  \
+                 Empty -> 0\n\
+               \n\
+               fn plain(ch) =\n  \
+                 send(ch, Box(\"some text \" + int_to_str(1)))\n  \
+                 v = select\n    \
+                   m = recv(ch) -> m\n    \
+                   default -> Empty\n  \
+                 size(v)\n\
+               \n\
+               fn block(ch, n) =\n  \
+                 send(ch, Box(\"some text \" + int_to_str(2)))\n  \
+                 v = select\n    \
+                   m = recv(ch) ->\n      \
+                     y = n + 1\n      \
+                     m\n    \
+                   default -> Empty\n  \
+                 size(v)\n\
+               \n\
+               fn outer(ch, keep) =\n  \
+                 send(ch, Box(\"some text \" + int_to_str(3)))\n  \
+                 v = select\n    \
+                   m = recv(ch) -> keep\n    \
+                   default -> Empty\n  \
+                 size(v) + size(keep)\n\
+               \n\
+               fn go(ch, keep, n, total) =\n  \
+                 if n == 0 then total else go(ch, keep, n - 1, total + plain(ch) + block(ch, n) + outer(ch, keep))\n\
+               \n\
+               fn main() =\n  \
+                 println(int_to_str(go(channel(1), Box(\"kept\" + int_to_str(4)), 1000, 0)))\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-arm-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let source = out_dir.join("arm.rill");
+    std::fs::write(&source, src).unwrap();
+    let exe = out_dir.join("arm");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+
+    let run = Command::new(&exe).env("RILL_DEBUG_ALLOC", "1").output().unwrap();
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "32000\n");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("live allocations: 0"), "expected none left, got: {stderr}");
+}
+
 #[test]
 fn binaries_are_small_like_c() {
     require_fresh_runtime();
