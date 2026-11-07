@@ -54,10 +54,10 @@ fn read_back(fd, n, acc) =
   println(msg)
   if n == 1 then 0 else read_back(fd, n - 1, rest)
 
-fn main() = match listen_on(8090)
+fn main() = match listen_on(0)
   Err(e) -> println(e)
   Ok(server) -> run(server)
 
 fn run(server) =
   spawn accept_loop(server, 1)
-  client(8090, Cons("merhaba", Cons("dunya", Nil)))
+  client(sock_port(server), Cons("merhaba", Cons("dunya", Nil)))
