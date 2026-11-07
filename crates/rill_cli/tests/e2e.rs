@@ -3894,6 +3894,92 @@ fn a_select_arm_gives_back_what_it_answers_with() {
     assert!(stderr.contains("live allocations: 0"), "expected none left, got: {stderr}");
 }
 
+/// A strand parked in a `select` with bytes still buffered, on a socket nobody
+/// has read yet. Writing those out used to happen inside the park, so a full
+/// socket gave the strand a second wait with the state for one, and the next
+/// value sent to it went nowhere. The program never finished: it is run with a
+/// deadline, because the failure is that it does not stop.
+#[test]
+fn a_buffered_socket_is_paid_for_before_a_strand_waits() {
+    let src = r#"fn writer(fd, ch, stop, sent) =
+  v = select
+    m = recv(ch) -> m
+    recv(stop) -> -1
+  if v < 0 then sent
+  else
+    sock_write(fd, "0123456789012345678901234567890123456789012345678901234567890123")
+    writer(fd, ch, stop, sent + 1)
+
+fn feed(ch, i, n) =
+  if i == n then 0
+  else
+    send(ch, i)
+    feed(ch, i + 1, n)
+
+fn reader(conn, got, want, out) =
+  if got >= want then send(out, got)
+  else
+    s = sock_read(conn)
+    if str_len(s) == 0 then send(out, got) else reader(conn, got + str_len(s), want, out)
+
+fn serve(server, ch, stop) =
+  match accept_on(server)
+    Ok(conn) ->
+      sock_buffered(conn)
+      spawn writer(conn, ch, stop, 0)
+      0
+    Err(e) -> 0
+
+fn main() =
+  n = 200000
+  ch = channel(256)
+  stop = channel()
+  out = channel(1)
+  match listen_on(0)
+    Err(e) -> println(e)
+    Ok(server) ->
+      spawn serve(server, ch, stop)
+      match connect_to("127.0.0.1", sock_port(server))
+        Err(e) -> println(e)
+        Ok(c) ->
+          spawn feed(ch, 0, n)
+          sleep_ms(300)
+          spawn reader(c, 0, n * 64, out)
+          println(int_to_str(recv(out)))
+"#;
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-owes-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let source = out_dir.join("owes.rill");
+    std::fs::write(&source, src).unwrap();
+    let exe = out_dir.join("owes");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+
+    let mut child = Command::new(&exe)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to run produced executable");
+    let started = std::time::Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(30) {
+            child.kill().unwrap();
+            panic!("still running after thirty seconds");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let run = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "12800000\n");
+}
+
 #[test]
 fn binaries_are_small_like_c() {
     require_fresh_runtime();
