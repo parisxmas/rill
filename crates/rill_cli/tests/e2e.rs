@@ -4056,6 +4056,27 @@ fn main() =
     assert_eq!(String::from_utf8_lossy(&run.stdout), "hello\n12800000\n");
 }
 
+/// A program is checked with its imports folded in, and every error used to be
+/// reported against the file named on the command line, at a line number from
+/// another one.
+#[test]
+fn a_type_error_names_the_file_it_is_in() {
+    let dir = std::env::temp_dir().join(format!("rill-e2e-where-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("other.rill"), "fn wrong() = if true then 1 else \"no\"\n").unwrap();
+    std::fs::write(dir.join("main.rill"), "import \"other\"\n\nfn main() = println(int_to_str(wrong()))\n").unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(dir.join("main.rill"))
+        .arg("-o")
+        .arg(dir.join("main"))
+        .output()
+        .expect("failed to spawn rill");
+    assert!(!build.status.success());
+    let said = String::from_utf8_lossy(&build.stderr);
+    assert!(said.contains("other.rill: type error"), "said: {said}");
+}
+
 #[test]
 fn binaries_are_small_like_c() {
     require_fresh_runtime();

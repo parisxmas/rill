@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — an error in the file it is in
+
+A program is checked with its imports folded in, and every type error was
+reported against the file named on the command line, at a line number from
+another one. The checker now says which function it was in, and the file is found
+from that once something has gone wrong, so a program that compiles pays nothing.
+
 ## 0.16.2 — a poll that was made too often
 
 A worker polled for parked strands before every strand it took, so that a strand

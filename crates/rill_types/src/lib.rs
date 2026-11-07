@@ -509,11 +509,24 @@ pub enum TStmt {
 pub struct TypeError {
     pub line: usize,
     pub msg: String,
+    /// The function this was found in, or empty. A program is checked as one
+    /// module with its imports folded in, so a line number alone does not say
+    /// which file it is a line of, and this is what can.
+    pub in_fn: String,
 }
 
 impl TypeError {
     fn new(line: usize, msg: impl Into<String>) -> Self {
-        TypeError { line, msg: msg.into() }
+        TypeError { line, msg: msg.into(), in_fn: String::new() }
+    }
+}
+
+impl TypeError {
+    fn found_in(mut self, name: &str) -> Self {
+        if self.in_fn.is_empty() {
+            self.in_fn = name.to_string();
+        }
+        self
     }
 }
 
@@ -2284,9 +2297,9 @@ impl Checker {
         let body = self.infer(&f.body, &mut env);
         self.expected_ret.pop();
         self.cur_fn_name = saved_name;
-        let body = body?;
+        let body = body.map_err(|e| e.found_in(&f.name))?;
         if f.name != "main" {
-            self.unify(&sig_ret, &body.ty, f.line, "function body type")?;
+            self.unify(&sig_ret, &body.ty, f.line, "function body type").map_err(|e| e.found_in(&f.name))?;
         }
         Ok(body)
     }

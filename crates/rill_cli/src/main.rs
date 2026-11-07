@@ -79,9 +79,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             match shared {
                 Ok(()) => Ok(ExitCode::SUCCESS),
                 Err(errors) => {
-                    for e in &errors {
-                        eprintln!("{}: {e}", path.display());
-                    }
+                    say_errors(&path, &errors);
                     Ok(ExitCode::FAILURE)
                 }
             }
@@ -123,9 +121,7 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
     let tmod = match rill_types::check_all(&module) {
         Ok(t) => t,
         Err(errors) => {
-            for e in &errors {
-                eprintln!("{}: {e}", path.display());
-            }
+            say_errors(&path, &errors);
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -158,15 +154,41 @@ fn explain_cmd(args: &[String]) -> Result<ExitCode, String> {
     let tmod = match rill_types::check_all(&module) {
         Ok(t) => t,
         Err(errors) => {
-            for e in &errors {
-                eprintln!("{}: {e}", path.display());
-            }
+            say_errors(&path, &errors);
             return Ok(ExitCode::FAILURE);
         }
     };
     let report = rill_codegen::explain(&tmod).map_err(|e| format!("{}: {e}", path.display()))?;
     print!("{report}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Each error, under the name of the file it is in. A program is checked with
+/// its imports folded in, so the file named on the command line is only right
+/// for what is in it. Looked for here, once something has gone wrong, so that a
+/// program that compiles pays nothing.
+fn say_errors(path: &Path, errors: &[rill_types::TypeError]) {
+    for e in errors {
+        let file = file_of(path, &e.in_fn, &mut Vec::new()).unwrap_or_else(|| path.to_path_buf());
+        eprintln!("{}: {e}", file.display());
+    }
+}
+
+fn file_of(path: &Path, name: &str, seen: &mut Vec<PathBuf>) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    let full = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if seen.contains(&full) {
+        return None;
+    }
+    seen.push(full);
+    let module = rill_syntax::parse(&std::fs::read_to_string(path).ok()?).ok()?;
+    if module.functions.iter().any(|f| f.name == name) {
+        return Some(path.to_path_buf());
+    }
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    module.imports.iter().find_map(|imp| file_of(&rill_syntax::loader::resolve(&dir, &imp.path), name, seen))
 }
 
 /// What the file imports, followed: each imported file that has a
@@ -236,9 +258,7 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
     if !json {
         let module = rill_syntax::load_program(&path)?;
         if let Err(errors) = rill_types::check_all(&module) {
-            for e in &errors {
-                eprintln!("{}: {e}", path.display());
-            }
+            say_errors(&path, &errors);
             return Ok(ExitCode::FAILURE);
         }
     }
@@ -991,8 +1011,10 @@ fn warn(path: &std::path::Path, tmod: &rill_types::TModule) {
 
 fn build_module(module: rill_syntax::ast::Module, opts: &BuildOpts) -> Result<PathBuf, String> {
 
-    let tmod = rill_types::check(&module)
-        .map_err(|e| format!("{}: {e}", opts.source.display()))?;
+    let tmod = rill_types::check(&module).map_err(|e| {
+        let file = file_of(&opts.source, &e.in_fn, &mut Vec::new()).unwrap_or_else(|| opts.source.clone());
+        format!("{}: {e}", file.display())
+    })?;
     // Several workers make a race of what one worker only interleaves, so
     // what strands share is checked for the build that has several.
     if opts.parallel {
