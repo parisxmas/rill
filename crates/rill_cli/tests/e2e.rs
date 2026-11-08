@@ -1542,7 +1542,8 @@ fn a_program_can_say_what_it_weighs() {
 }
 
 /// And the wait is the length that was asked for, within the slack any
-/// operating system takes on a timer.
+/// operating system takes on a timer. Never shorter; longer by what a shared
+/// Mac running the other tests beside it gives, which has been 150 ms.
 #[test]
 fn sleep_ms_waits_about_that_long() {
     let out = run_source(
@@ -1551,7 +1552,7 @@ fn sleep_ms_waits_about_that_long() {
            t0 = now_nanos()\n  \
            sleep_ms(200)\n  \
            ms = (now_nanos() - t0) / 1000000\n  \
-           println(if ms >= 195 && ms < 320 then \"about 200 ms\" else int_to_str(ms) + \" ms\")\n",
+           println(if ms >= 195 && ms < 600 then \"about 200 ms\" else int_to_str(ms) + \" ms\")\n",
     );
     assert_eq!(out, "about 200 ms\n");
 }
