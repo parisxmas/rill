@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — an offer that can be refused
+## 0.16.4 — an offer that can be refused
 
 `try_send`, `try_recv` and `call` are in the prelude, because every program with
 strands that talk to each other was writing them. Written as anyone would, the
