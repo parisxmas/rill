@@ -34,6 +34,10 @@ pub struct Module {
     /// route to them, since a library of machines is what an import can be.
     /// Their lines are another file's, so nothing is reported at them.
     pub imported_machines: Vec<MachineDef>,
+    /// What the loader has to say short of refusing: an imported file, taken
+    /// in without an alias, that replaces something of the prelude's for the
+    /// whole program. Said by the CLI on standard error.
+    pub notes: Vec<String>,
 }
 
 /// `machine line(me: Chan(Signal), sw: Chan(Signal))` — a process in the

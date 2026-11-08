@@ -59,6 +59,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let sandbox = sandbox_of(rest)?;
             let path = PathBuf::from(src);
             let module = rill_syntax::load_program(&path)?;
+            say_notes(&module);
             // Everything one pass can find, rather than the first thing: a
             // file with three mistakes in it should take one run to learn
             // about three mistakes.
@@ -827,6 +828,7 @@ impl BuildOpts {
 
 fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     let module = rill_syntax::load_program(&opts.source)?;
+    say_notes(&module);
     refuse_library(&module, &opts.source)?;
     build_module(module, opts)
 }
@@ -997,6 +999,13 @@ fn test_main(tests: &[String]) -> rill_syntax::ast::FnDef {
         wheres: Vec::new(),
         private: false,
         fast: false,
+    }
+}
+
+/// What the loader had to say short of refusing, on standard error.
+fn say_notes(module: &rill_syntax::ast::Module) {
+    for text in &module.notes {
+        eprintln!("note: {text}");
     }
 }
 

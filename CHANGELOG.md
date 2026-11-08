@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — an import that takes the prelude's place says so
+
+A file imported without an alias that defines one of the prelude's functions
+replaces it in the whole program, and nothing said so: importing `db/oxidb` that
+way took `call`, `find` and `count` from every line of the program. `rill build`,
+`run` and `check` now name the file and what it replaces. A program's own file
+may still define them quietly, and an aliased import keeps its names to itself.
+
 ## 0.16.5 — why a program ended, where it is looked for
 
 Thirty-seven of the runtime's reasons for ending a program were written to

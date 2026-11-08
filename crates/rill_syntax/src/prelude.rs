@@ -125,6 +125,7 @@ fn merge(prelude: Module, user: Module) -> Module {
         machines: user.machines,
         systems: user.systems,
         imported_machines: user.imported_machines,
+        notes: user.notes,
     }
 }
 

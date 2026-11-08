@@ -51,6 +51,11 @@ fn main() = println(m.label(m.Meters(1.5)) + " " + i.label(i.Feet(2.0)))
 different types. A pattern names an aliased constructor the same way:
 `match u m.Meters(v) -> v`.
 
+A function of the same name as one of the prelude's replaces it, in the whole
+program. In the program's own file that is plain to see and usually meant. In a
+file imported without an alias it is neither, so the build notes it, naming the
+file and what it replaces; an alias keeps both.
+
 A function the file keeps to itself is written `private fn`. An importer
 does not see it, cannot call it — the error names the file — and may have a
 function of the same name, since the two never meet: the loader renames a
@@ -1814,7 +1819,8 @@ where they wait, so the same program is not checked there.
 ## 8. The prelude
 
 Every program has these in scope; any definition of your own with the same name
-replaces the prelude's.
+replaces the prelude's, and one in a file imported without an alias is noted
+when the program is built.
 
 **Types**: `Option(a)` = `None | Some(a)`, `Result(a, e)` = `Ok(a) | Err(e)`,
 `List(a)` = `Nil | Cons(head, tail)`.

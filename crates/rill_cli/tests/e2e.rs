@@ -3410,6 +3410,30 @@ fn a_program_that_ends_says_why_on_standard_error() {
     assert_eq!(String::from_utf8_lossy(&run.stderr), "rill: send on a closed channel\n");
 }
 
+/// A file imported without an alias that defines one of the prelude's
+/// functions replaces it for every line of the program, which none of those
+/// lines shows. The build says so. The program's own file may do it and mean
+/// it, and an aliased import keeps its names to itself, so neither is noted.
+#[test]
+fn an_import_that_replaces_the_prelude_is_noted() {
+    let dir = std::env::temp_dir().join(format!("rill-e2e-replaces-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("helpers.rill"), "fn sum(l) = 42\n\nfn len(x) = 7\n").unwrap();
+    std::fs::write(dir.join("tidy.rill"), "fn sum(l) = 1\n").unwrap();
+    std::fs::write(
+        dir.join("main.rill"),
+        "import \"helpers\"\nimport \"tidy\" as t\n\nfn count(x) = 1\n\nfn main() = println(sum(0) + t.sum(0) + count(0))\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg("main.rill").current_dir(&dir).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "note: helpers.rill defines `sum` and `len`, which replace the prelude's in the whole program; \
+         import the file with `as` to keep both, or rename them\n"
+    );
+}
+
 /// Without a `default` nothing has said what should happen instead, so a send
 /// into a closed channel from a `select` still ends the program.
 #[test]

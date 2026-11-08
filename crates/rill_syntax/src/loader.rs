@@ -52,6 +52,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         imported_fns: Vec::new(),
     };
     loader.visit(entry, None, None)?;
+    let notes = loader.replaced_prelude();
     with_prelude(Module {
         name: loader.name.clone(),
         name_line: loader.name_line,
@@ -67,6 +68,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         machines: loader.machines,
         systems: loader.systems,
         imported_machines: loader.imported_machines,
+        notes,
     })
     .map_err(|e| {
         // Found after the files were joined: the function it is in says
@@ -173,6 +175,40 @@ struct Loader {
 }
 
 impl Loader {
+    /// The prelude's functions that a file imported without an alias defines
+    /// again, by file. The program's own file may do that and mean it; an
+    /// import does it for every line of the program, which is not where
+    /// anyone reading one of those lines would look.
+    fn replaced_prelude(&self) -> Vec<String> {
+        let prelude = crate::parser::parse(crate::prelude::PRELUDE).expect("the embedded prelude must parse");
+        let theirs: HashSet<&str> = prelude.functions.iter().map(|f| f.name.as_str()).collect();
+        let mut by_file: Vec<(PathBuf, Vec<String>)> = Vec::new();
+        for name in &self.imported_fns {
+            if name.contains('.') || !theirs.contains(name.as_str()) {
+                continue;
+            }
+            let Some(file) = self.fn_origin.get(name) else { continue };
+            match by_file.iter_mut().find(|(f, _)| f == file) {
+                Some((_, names)) => names.push(format!("`{name}`")),
+                None => by_file.push((file.clone(), vec![format!("`{name}`")])),
+            }
+        }
+        let here = std::env::current_dir().ok();
+        by_file
+            .into_iter()
+            .map(|(file, mut names)| {
+                let shown = here.as_ref().and_then(|h| file.strip_prefix(h).ok()).unwrap_or(&file).display().to_string();
+                let (which, it) = if names.len() == 1 {
+                    (format!("{}, which replaces the prelude's", names[0]), "it")
+                } else {
+                    let last = names.pop().unwrap();
+                    (format!("{} and {last}, which replace the prelude's", names.join(", ")), "them")
+                };
+                format!("{shown} defines {which} in the whole program; import the file with `as` to keep both, or rename {it}")
+            })
+            .collect()
+    }
+
     fn visit(
         &mut self,
         path: &Path,
