@@ -2079,7 +2079,7 @@ unsafe fn cpath(s: *const u8) -> *mut u8 {
     if (0..n).any(|i| *b.add(i) == 0) {
         let p = malloc(1);
         if p.is_null() {
-            out(b"rill: out of memory\n");
+            err(b"rill: out of memory\n");
             die();
         }
         *p = 0;
@@ -2093,7 +2093,7 @@ unsafe fn cstr(s: *const u8) -> *mut u8 {
     let n = str_len_of(s);
     let p = malloc(n + 1);
     if p.is_null() {
-        out(b"rill: out of memory\n");
+        err(b"rill: out of memory\n");
         die();
     }
     core::ptr::copy_nonoverlapping(str_bytes(s), p, n);
@@ -3332,11 +3332,11 @@ pub unsafe extern "C" fn rill_wait_signal() -> i64 {
     }
     pthread_mutex_unlock(&raw mut SYNC_LOCK);
     if !up {
-        out(b"rill: cannot listen for signals\n");
+        err(b"rill: cannot listen for signals\n");
         die();
     }
     if mine == usize::MAX {
-        out(b"rill: too many strands waiting on a signal - have one wait and close a channel the others watch\n");
+        err(b"rill: too many strands waiting on a signal - have one wait and close a channel the others watch\n");
         die();
     }
     let read_end = SIG_PIPE[mine][0];
@@ -3363,7 +3363,7 @@ pub unsafe extern "C" fn rill_wait_signal() -> i64 {
 #[cfg(not(unix))]
 #[no_mangle]
 pub unsafe extern "C" fn rill_wait_signal() -> i64 {
-    out(b"rill: signals are not available on this target\n");
+    err(b"rill: signals are not available on this target\n");
     die()
 }
 
@@ -4141,7 +4141,7 @@ pub unsafe extern "C" fn rill_buf_new(n: i64, size: i64) -> *mut u8 {
             None => calloc(1, (16 + bytes) as usize),
         };
         if b.is_null() {
-            out(b"rill: out of memory\n");
+            err(b"rill: out of memory\n");
             die();
         }
         b
@@ -4176,7 +4176,7 @@ pub unsafe extern "C" fn rill_buf_new_uninit(n: i64, size: i64) -> *mut u8 {
             None => malloc((16 + bytes) as usize),
         };
         if b.is_null() {
-            out(b"rill: out of memory\n");
+            err(b"rill: out of memory\n");
             die();
         }
         b
@@ -4362,7 +4362,7 @@ pub unsafe extern "C" fn rill_list_sort(
     };
     let pairs = malloc(n * 2 * core::mem::size_of::<SortPair>()) as *mut SortPair;
     if pairs.is_null() {
-        out(b"rill: out of memory\n");
+        err(b"rill: out of memory\n");
         die();
     }
     let mut c = head;
@@ -4390,7 +4390,7 @@ pub unsafe extern "C" fn rill_list_sort(
     } else {
         let room = malloc(n * width);
         if room.is_null() {
-            out(b"rill: out of memory\n");
+            err(b"rill: out of memory\n");
             die();
         }
         for i in 0..n {
@@ -4476,7 +4476,7 @@ pub unsafe extern "C" fn rill_buf_argsort(src: *const u8, dst: *mut u8) {
     }
     let pairs = malloc(n * 16) as *mut [u64; 2];
     if pairs.is_null() {
-        out(b"rill: out of memory\n");
+        err(b"rill: out of memory\n");
         die();
     }
     let d = src as *const f64;
@@ -4495,7 +4495,7 @@ pub unsafe extern "C" fn rill_buf_argsort(src: *const u8, dst: *mut u8) {
         // replaced, 27 by sorting the pairs, 16 this way (2026-09-25).
         let tmp = malloc(n * 16) as *mut [u64; 2];
         if tmp.is_null() {
-            out(b"rill: out of memory\n");
+            err(b"rill: out of memory\n");
             die();
         }
         let mut counts = [[0usize; 256]; 8];
@@ -4786,9 +4786,13 @@ extern "C" {
 }
 
 /// Unbuffered, to standard error: a crash report must not sit in a buffer
-/// the crash then loses.
+/// the crash then loses. What standard output was holding goes first, so that
+/// a terminal shows the two in the order they happened.
 fn err(bytes: &[u8]) {
-    unsafe { write_all(2, bytes) }
+    unsafe {
+        rill_flush_out();
+        write_all(2, bytes)
+    }
 }
 
 unsafe fn err_dec(v: i64) {
@@ -5729,9 +5733,9 @@ pub unsafe extern "C" fn rill_map_next(p: *mut u8, from: i64) -> i64 {
 
 unsafe fn map_slot(m: *const Map, i: i64) -> *mut i64 {
     if i < 0 || i as usize >= (*m).cap || !is_full(*(*m).ctrl.add(i as usize)) {
-        out(b"rill: map slot ");
-        out_dec(i);
-        out(b" holds nothing\n");
+        err(b"rill: map slot ");
+        err_dec(i);
+        err(b" holds nothing\n");
         die()
     }
     map_key(m, i as usize)
@@ -6343,7 +6347,7 @@ static QUAR_NEXT: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 unsafe fn quar_alloc() -> *mut u8 {
     let p = mmap(core::ptr::null_mut(), QUAR_PAGE, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
     if p as isize == -1 {
-        out(b"rill: out of memory\n");
+        err(b"rill: out of memory\n");
         die();
     }
     p
@@ -6860,7 +6864,7 @@ unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
         if (*pool).next + bytes > (*pool).end {
             let p = mmap(core::ptr::null_mut(), POOL_CHUNK, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
             if p as isize == -1 {
-                out(b"rill: out of memory\n");
+                err(b"rill: out of memory\n");
                 die();
             }
             NCHUNKS_ALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -6880,7 +6884,7 @@ unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
     live_add(1);
     let p = malloc(size as usize);
     if p.is_null() {
-        out(b"rill: out of memory\n");
+        err(b"rill: out of memory\n");
         die();
     }
     p
@@ -7422,7 +7426,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
     let total = usable + PAGE;
     let p = mmap(core::ptr::null_mut(), total, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
     if p as isize == -1 {
-        out(b"rill: cannot map strand stack\n");
+        err(b"rill: cannot map strand stack\n");
         die();
     }
     mprotect(p, PAGE, PROT_NONE);
@@ -7437,7 +7441,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
     let total = usable + PAGE;
     let p = VirtualAlloc(core::ptr::null_mut(), total, MEM_COMMIT_RESERVE, PAGE_READWRITE);
     if p.is_null() {
-        out(b"rill: cannot map strand stack\n");
+        err(b"rill: cannot map strand stack\n");
         die();
     }
     let mut was: u32 = 0;
@@ -7450,7 +7454,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
 /// means the compile-time refusal was not applied.
 #[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn alloc_stack(_usable: usize) -> *mut u8 {
-    out(b"rill: strands are not available on wasm\n");
+    err(b"rill: strands are not available on wasm\n");
     die();
 }
 
@@ -7870,7 +7874,7 @@ unsafe extern "C" fn ctx_switch(_old: *mut Ctx, _new: *const Ctx) {
 /// strands onto wasm is asyncify or JSPI, not a port of this function.
 #[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe extern "C" fn ctx_switch(_old: *mut Ctx, _new: *const Ctx) {
-    out(b"rill: strands are not available on wasm\n");
+    err(b"rill: strands are not available on wasm\n");
     die();
 }
 
@@ -7948,7 +7952,7 @@ unsafe fn new_spawned_g(w: *mut Worker, code: extern "C" fn(*mut u8), env: *mut 
     } else {
         let g = malloc(core::mem::size_of::<G>()) as *mut G;
         if g.is_null() {
-            out(b"rill: out of memory spawning strand\n");
+            err(b"rill: out of memory spawning strand\n");
             die();
         }
         (*g).saved = core::ptr::null_mut();
@@ -7965,7 +7969,7 @@ unsafe fn new_spawned_g(w: *mut Worker, code: extern "C" fn(*mut u8), env: *mut 
 unsafe fn new_main_g(code: extern "C" fn(*mut u8)) -> *mut G {
     let g = malloc(core::mem::size_of::<G>()) as *mut G;
     if g.is_null() {
-        out(b"rill: out of memory spawning strand\n");
+        err(b"rill: out of memory spawning strand\n");
         die();
     }
     let total = MAIN_STACK_SIZE + PAGE;
@@ -8001,7 +8005,7 @@ unsafe fn save_stack(g: *mut G, exec_top: usize) {
         let cap = len.next_power_of_two();
         (*g).saved = malloc(cap);
         if (*g).saved.is_null() {
-            out(b"rill: out of memory parking strand\n");
+            err(b"rill: out of memory parking strand\n");
             die();
         }
         (*g).saved_cap = cap;
@@ -8114,7 +8118,7 @@ const HOST_WAKE: i64 = 2;
 unsafe fn new_host_g() -> *mut G {
     let g = malloc(core::mem::size_of::<G>()) as *mut G;
     if g.is_null() {
-        out(b"rill: out of memory starting a host strand\n");
+        err(b"rill: out of memory starting a host strand\n");
         die();
     }
     (*g).saved = core::ptr::null_mut();
@@ -8149,7 +8153,7 @@ extern "C" fn host_nothing(_env: *mut u8) {}
 pub unsafe extern "C" fn rill_host_enter() {
     if HOST_G.is_null() || NWORKERS < 2 {
         if !HOST_G.is_null() && NWORKERS < 2 && !on_first_thread() {
-            out(b"rill: a second thread called into the library; run it with RILL_THREADS=2 or more\n");
+            err(b"rill: a second thread called into the library; run it with RILL_THREADS=2 or more\n");
             die();
         }
         return;
@@ -8161,7 +8165,7 @@ pub unsafe extern "C" fn rill_host_enter() {
     // a thread the runtime has not met
     let i = NWORKERS + HOST_THREADS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
     if i >= MAX_WORKERS {
-        out(b"rill: too many threads calling in at once\n");
+        err(b"rill: too many threads calling in at once\n");
         die();
     }
     let base = alloc_stack(EXEC_STACK_SIZE);
@@ -8438,7 +8442,7 @@ unsafe fn host_pump(w: *mut Worker, host: *mut G) {
                 && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0;
             idle_rounds = if quiet { idle_rounds + 1 } else { 0 };
             if idle_rounds > 100000 {
-                out(b"rill: deadlock - the host waits and no strand can wake it\n");
+                err(b"rill: deadlock - the host waits and no strand can wake it\n");
                 die();
             }
             sched_yield();
@@ -8657,7 +8661,7 @@ unsafe fn worker_loop(w: *mut Worker) {
             if idle_rounds > 1000 && HOST_G.is_null() {
                 // Nothing is executing and no queue holds work, round after
                 // round: nothing can ever wake the parked strands.
-                out(b"rill: deadlock - all strands are blocked\n");
+                err(b"rill: deadlock - all strands are blocked\n");
                 die();
             }
             sched_yield();
@@ -9126,7 +9130,7 @@ unsafe fn chan_grow(c: *mut Chan) {
     let cap = if old == 0 { 16 } else { old * 2 };
     let fresh = malloc(cap * 16) as *mut u64;
     if fresh.is_null() {
-        out(b"rill: out of memory growing a mailbox\n");
+        err(b"rill: out of memory growing a mailbox\n");
         die();
     }
     for k in 0..(*c).len {
@@ -9338,7 +9342,7 @@ pub unsafe extern "C" fn rill_chan_closed(p: *mut u8) -> i8 {
 /// strands really do race, `select` on a second channel is how one of them
 /// finds out in time.
 unsafe fn die_on_closed(what: &[u8]) -> ! {
-    out(what);
+    err(what);
     die()
 }
 
@@ -9708,7 +9712,7 @@ pub unsafe extern "C" fn rill_select(
     // the heap because a parked strand's stack is copied away.
     let ws = malloc(n as usize * core::mem::size_of::<Waiter>()) as *mut Waiter;
     if ws.is_null() {
-        out(b"rill: out of memory in select\n");
+        err(b"rill: out of memory in select\n");
         die();
     }
     let g = (*me()).current;
@@ -10103,7 +10107,7 @@ mod net {
         pub(super) unsafe fn poller_open(w: *mut Worker) -> i32 {
             let kq = kqueue();
             if kq < 0 {
-                out(b"rill: cannot create kqueue\n");
+                err(b"rill: cannot create kqueue\n");
                 die();
             }
             let ev = KEvent {
@@ -10165,7 +10169,7 @@ mod net {
                 }
                 let fresh = calloc(want, core::mem::size_of::<Armed>()) as *mut Armed;
                 if fresh.is_null() {
-                    out(b"rill: out of memory in the poller\n");
+                    err(b"rill: out of memory in the poller\n");
                     die();
                 }
                 if !ARMED.is_null() {
@@ -10403,14 +10407,14 @@ mod net {
         pub(super) unsafe fn poller_open(w: *mut Worker) -> i32 {
             let ep = epoll_create1(0);
             if ep < 0 {
-                out(b"rill: cannot create epoll\n");
+                err(b"rill: cannot create epoll\n");
                 die();
             }
             // The wakeup channel. Registered level-triggered and never
             // one-shot, so it stays armed for the life of the worker.
             let efd = eventfd(0, EFD_NONBLOCK);
             if efd < 0 {
-                out(b"rill: cannot create eventfd\n");
+                err(b"rill: cannot create eventfd\n");
                 die();
             }
             let mut ev = EpollEvent { events: EPOLLIN, data: 0 };
@@ -11366,7 +11370,7 @@ mod net {
             (malloc(READ_CHUNK), true)
         };
         if buf.is_null() {
-            out(b"rill: out of memory reading a socket\n");
+            err(b"rill: out of memory reading a socket\n");
             die();
         }
         loop {
@@ -11483,7 +11487,7 @@ mod net {
             }
             let fresh = calloc(want, core::mem::size_of::<WBuf>()) as *mut WBuf;
             if fresh.is_null() {
-                out(b"rill: out of memory buffering a socket\n");
+                err(b"rill: out of memory buffering a socket\n");
                 die();
             }
             if !WBUFS.is_null() {
@@ -11508,7 +11512,7 @@ mod net {
             (*b).data = malloc(WBUF_CAP);
             (*b).len = 0;
             if (*b).data.is_null() {
-                out(b"rill: out of memory buffering a socket\n");
+                err(b"rill: out of memory buffering a socket\n");
                 die();
             }
         }

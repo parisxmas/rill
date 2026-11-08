@@ -2544,7 +2544,7 @@ one.
 
 | | |
 |---|---|
-| `println(x)` / `print(x)` | print any value type, with or without a newline; standard output is buffered like C's — a line at a time on a terminal, 64 KB otherwise — and written out before the program ends, before `exit`, before a read of standard input and before a strand waits |
+| `println(x)` / `print(x)` | print any value type, with or without a newline; standard output is buffered like C's — a line at a time on a terminal, 64 KB otherwise — and written out before the program ends, before `exit`, before a read of standard input, before a strand waits and before the runtime says on standard error why it is ending the program |
 | `show(x) -> Str` | render any value as a string |
 | `to_json(x) -> Str` | the value as JSON text, derived from its type; an `impl Json(T)` replaces the text for `T` — see [JSON from a type](#json-from-a-type) |
 | `from_json(text) -> Result(T, Str)` | the text read into the type the context asks for, the parser derived from `T`; a refusal names what was expected and the byte — see [JSON from a type](#json-from-a-type) |

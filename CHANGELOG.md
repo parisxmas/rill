@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — why a program ended, where it is looked for
+
+Thirty-seven of the runtime's reasons for ending a program were written to
+standard output: a deadlock, running out of memory, a send on a closed channel.
+A program whose output went into a pipe or a file took the reason with it, and
+a terminal showed nothing. They go to standard error now, with the others, and
+whatever standard output was holding is written out first, so the two still
+come in the order they happened.
+
 ## 0.16.4 — an offer that can be refused
 
 `try_send`, `try_recv` and `call` are in the prelude, because every program with

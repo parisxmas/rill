@@ -3387,11 +3387,34 @@ fn a_try_on_a_closed_channel_answers_rather_than_ends() {
     assert!(report.contains("live allocations: 0\n"), "{report}");
 }
 
+/// Why a program ended is said on standard error, where a program whose
+/// output is piped somewhere still shows it, and after everything it printed
+/// before, not in the middle of it.
+#[test]
+fn a_program_that_ends_says_why_on_standard_error() {
+    let src = "fn main() =\n  \
+                 print(\"before\")\n  \
+                 ch = channel(1)\n  \
+                 close(ch)\n  \
+                 send(ch, 1)\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-why-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("why.rill");
+    std::fs::write(&path, src).unwrap();
+    let exe = out_dir.join("why");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("-o").arg(&exe).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).output().unwrap();
+    assert!(!run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "before");
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "rill: send on a closed channel\n");
+}
+
 /// Without a `default` nothing has said what should happen instead, so a send
 /// into a closed channel from a `select` still ends the program.
 #[test]
 fn a_select_with_no_default_still_refuses_a_closed_channel() {
-    run_source_dies(
+    let err = run_source_dies(
         "select_closed",
         "fn main() =\n  \
            ch = channel(1)\n  \
@@ -3401,6 +3424,7 @@ fn a_select_with_no_default_still_refuses_a_closed_channel() {
              timeout(0) -> 2\n  \
            print(r)\n",
     );
+    assert!(err.contains("rill: select sends on a closed channel"), "{err}");
 }
 
 /// The dangerous case: a strand in a `select` with a deadline is registered in
