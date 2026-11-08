@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — why a program ended, where it is looked for
+## 0.16.5 — why a program ended, where it is looked for
 
 Thirty-seven of the runtime's reasons for ending a program were written to
 standard output: a deadlock, running out of memory, a send on a closed channel.
