@@ -9658,16 +9658,25 @@ pub unsafe extern "C" fn rill_select(
             // strand waiting on several things is told to stop: close the one
             // that means stop, and every `select` watching it runs that arm.
             if (*ch).closed != 0 {
-                unlock_chans(&chans, k);
+                // A `default` has said what to do when an arm cannot go, and
+                // an arm with no value to bind cannot.
                 if c.kind == SEL_RECV_BIND {
+                    if has_default != 0 {
+                        continue;
+                    }
+                    unlock_chans(&chans, k);
                     die_on_closed(
                         b"rill: select bound a value from a closed channel - use recv_opt\n",
                     );
                 }
+                unlock_chans(&chans, k);
                 return i;
             }
         } else {
             if (*ch).closed != 0 {
+                if has_default != 0 {
+                    continue;
+                }
                 unlock_chans(&chans, k);
                 die_on_closed(b"rill: select sends on a closed channel\n");
             }

@@ -1620,7 +1620,19 @@ A closed channel makes its receive arm ready, so `close(stop)` reaches that
 strand whatever the other arm is doing. The arm binds nothing, and that is what
 makes it work: there is no value for a closed channel to produce. An arm
 written `x = recv(stop) ->` would have to produce one, and ends the program
-saying so.
+saying so. So does a `send` arm on a closed channel.
+
+A `default` changes that, because it has said what to do when an arm cannot go:
+in a `select` with one, both of those arms are simply not ready. That is what
+`try_send(ch, v)` and `try_recv(ch)` are written from. `try_send` answers whether
+the value was taken and `try_recv` an `Option`, neither of them waits, and
+neither ends the program on a closed channel; `closed(ch)` tells a channel that
+is closed from one that is only full or empty.
+
+`call(ch, make)` is a question and its answer: it makes a reply channel with room
+for one, sends `make(back)`, and waits. `make` is a request with a hole in it,
+`call(registry, Find(name, _))`. It is `send` and `recv`, closed channels
+included.
 
 `chan_wait` and `chan_taken` are the two builtins `recv_opt` is written from,
 in the way `map_get` is written from `map_find` and `map_val_at`. They are
@@ -2540,6 +2552,7 @@ one.
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_find_from(s, needle, from)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. `str_find_from` starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped |
 | `channel()` `send(ch, v)` `recv(ch)` `close(ch)` `closed(ch)` | channels; `close` wakes everything parked on one, and the prelude's `recv_opt` is written from `chan_wait` and `chan_taken` — see §7 |
+| `try_send(ch, v)` `try_recv(ch)` `call(ch, make)` | an offer and a look that do not wait, and a question with its answer — see §7 |
 | `map_new()` `m[k] = v` (or `map_set`) `map_len` `map_del` `map_clear` | hash tables; `#m` is `map_len`, and the prelude's `map_get`, `map_or`, `map_has`, `map_keys`, `map_values` and `map_items` are written on top of these |
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `vec_new()` `vec_push(v, x)` `vec_at(v, i)` `vec_set(v, i, x)` `vec_len(v)` `vec_take_last(v)` `vec_clear(v)` | vectors; `#v` is `vec_len`, `v[i]` is the prelude's `vec_get`, and `vec_pop`, `vec_of`, `vec_list`, the walks and the sorts are written in the prelude on these — see [Vectors](#vectors) |

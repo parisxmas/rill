@@ -3343,6 +3343,65 @@ fn a_select_can_carry_a_deadline() {
     );
 }
 
+/// `default` says what to do when an arm cannot go, and a closed channel is one
+/// way it cannot. Without that `try_send` and `try_recv` would end the program in
+/// the one case a caller reaches for them, and looking at `closed` first would
+/// leave a gap for the close to land in. Strings, so that a value nobody took
+/// has to be given back.
+#[test]
+fn a_try_on_a_closed_channel_answers_rather_than_ends() {
+    let out = run_source(
+        "try_closed",
+        "fn tell(o) =\n  \
+           match o\n    \
+             Some(v) -> println(v)\n    \
+             None -> println(\"none\")\n\
+         \n\
+         fn yes(b) = println(if b then \"took\" else \"refused\")\n\
+         \n\
+         fn echo(ch) =\n  \
+           Ask(s, back) = recv(ch)\n  \
+           send(back, s + \"!\")\n\
+         \n\
+         type Ask\n  \
+           Ask(Str, Chan(Str))\n\
+         \n\
+         fn main() =\n  \
+           ch = channel(1)\n  \
+           tell(try_recv(ch))\n  \
+           yes(try_send(ch, \"one\" + \"1\"))\n  \
+           yes(try_send(ch, \"full\" + \"2\"))\n  \
+           close(ch)\n  \
+           yes(try_send(ch, \"late\" + \"3\"))\n  \
+           tell(try_recv(ch))\n  \
+           tell(try_recv(ch))\n  \
+           asks = channel()\n  \
+           spawn echo(asks)\n  \
+           println(call(asks, Ask(\"hi\", _)))\n",
+    );
+    assert_eq!(out, "none\ntook\nrefused\nrefused\none1\nnone\nhi!\n");
+    let exe = std::env::temp_dir().join(format!("rill-e2e-src-{}", std::process::id())).join("try_closed");
+    let run = Command::new(&exe).env("RILL_DEBUG_ALLOC", "1").output().unwrap();
+    let report = String::from_utf8_lossy(&run.stderr);
+    assert!(report.contains("live allocations: 0\n"), "{report}");
+}
+
+/// Without a `default` nothing has said what should happen instead, so a send
+/// into a closed channel from a `select` still ends the program.
+#[test]
+fn a_select_with_no_default_still_refuses_a_closed_channel() {
+    run_source_dies(
+        "select_closed",
+        "fn main() =\n  \
+           ch = channel(1)\n  \
+           close(ch)\n  \
+           r = select\n    \
+             send(ch, 1) -> 1\n    \
+             timeout(0) -> 2\n  \
+           print(r)\n",
+    );
+}
+
 /// The dangerous case: a strand in a `select` with a deadline is registered in
 /// two places that can both come ready, and queueing a strand twice corrupts
 /// the run queue. Four thousand rounds with the deadline swept across the

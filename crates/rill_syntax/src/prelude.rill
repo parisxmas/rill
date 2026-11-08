@@ -743,6 +743,30 @@ fn dir_upto(path, i) =
 # that was in flight.
 fn recv_opt(ch) = if chan_wait(ch) then Some(chan_taken(ch)) else None
 
+# A question and its answer. `make` is a request with a hole where the reply
+# goes, `call(registry, Find(name, _))`, and the reply channel has room for one,
+# so whoever answers never waits on whoever asked, who may be gone.
+fn call(ch, make) =
+  back = channel(1)
+  send(ch, make(back))
+  recv(back)
+
+# An offer that gives up rather than waits. False when the channel has no room
+# or is closed; `closed(ch)` says which, if that matters.
+fn try_send(ch, v) =
+  ok = select
+    send(ch, v) -> true
+    default -> false
+  ok
+
+# `recv_opt` that does not wait. None when there is nothing yet or nothing ever
+# again, and the same `closed(ch)` tells those apart.
+fn try_recv(ch) =
+  got = select
+    v = recv(ch) -> Some(v)
+    default -> None
+  got
+
 # -- signals -----------------------------------------------------------------
 
 # The numbers `wait_signal` answers with. They are functions because the

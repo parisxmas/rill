@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — an offer that can be refused
+
+`try_send`, `try_recv` and `call` are in the prelude, because every program with
+strands that talk to each other was writing them. Written as anyone would, the
+first two ended the program on a closed channel, which is the one case they are
+reached for. A `select` with a `default` now counts a `send` arm on a closed
+channel, and a receive arm with a value to bind, as not ready rather than as a
+mistake. Without a `default` both still end the program.
+
 ## 0.16.3 — a yield that looked at the poller every time
 
 `yield()` looked for parked strands on every call, which is what 0.16.2 stopped
