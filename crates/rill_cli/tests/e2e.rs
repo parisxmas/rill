@@ -5617,9 +5617,13 @@ fn a_blocking_externs_answer_reaches_the_strand_that_asked() {
 /// that survives state changes, `reset(T)` stops it, `active(T)` asks;
 /// a timer that runs out arrives as the signal it is, and one with a
 /// field carries it. Written back by `rill fmt` as declared, and drawn.
+///
+/// The margins are wide because a shared runner fires a timer as much as 150 ms
+/// late: the ticks are done 270 ms before `Retry`, and the second machine's
+/// ticks, which race its `Ping` to the log, are passed over.
 #[test]
 fn a_machine_keeps_named_timers() {
-    let src = "type Signal\n  Start\n  Ping\n  Retry\n  Tick(n: Int)\n  Stop\n  Report\n  Status(text: Str)\n\ntype St\n  Idle\n  Waiting(tries: Int)\n\nmachine node(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    Start ->\n      set(Retry, 45)\n      set(Tick(1), 10)\n      Waiting(0)\n    Report ->\n      reply(Status(\"idle\"))\n      stay\n  state Waiting(tries)\n    Tick(n) ->\n      send(log, \"tick \" + int_to_str(n))\n      if n < 3 then set(Tick(n + 1), 10) else ()\n      Waiting(tries)\n    Retry ->\n      send(log, \"retry \" + int_to_str(tries) + \", tick \" + (if active(Tick) then \"running\" else \"done\"))\n      if tries < 1 then set(Retry, 45) else ()\n      Waiting(tries + 1)\n    Ping ->\n      reset(Retry)\n      send(log, \"pinged, retry \" + (if active(Retry) then \"still on\" else \"off\"))\n      Waiting(tries)\n    Stop -> stop\n    Report ->\n      reply(Status(\"waiting \" + int_to_str(tries)))\n      stay\n\nfn ask(w, env) =\n  post(w, env, Report)\n  match recv(env).signal\n    Status(text) -> text\n    _ -> \"?\"\n\nfn main() =\n  log = channel(64)\n  env = channel(16)\n  a = channel(16)\n  spawn node(a, log, Idle)\n  post(a, env, Start)\n  for i in 0..5\n    println(recv(log))\n  println(ask(a, env))\n  b = channel(16)\n  spawn node(b, log, Idle)\n  post(b, env, Start)\n  sleep_ms(5)\n  post(b, env, Ping)\n  println(recv(log))\n  sleep_ms(70)\n  println(ask(b, env))\n  post(b, env, Stop)\n";
+    let src = "type Signal\n  Start\n  Ping\n  Retry\n  Tick(n: Int)\n  Stop\n  Report\n  Status(text: Str)\n\ntype St\n  Idle\n  Waiting(tries: Int)\n\nmachine node(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    Start ->\n      set(Retry, 300)\n      set(Tick(1), 10)\n      Waiting(0)\n    Report ->\n      reply(Status(\"idle\"))\n      stay\n  state Waiting(tries)\n    Tick(n) ->\n      send(log, \"tick \" + int_to_str(n))\n      if n < 3 then set(Tick(n + 1), 10) else ()\n      Waiting(tries)\n    Retry ->\n      send(log, \"retry \" + int_to_str(tries) + \", tick \" + (if active(Tick) then \"running\" else \"done\"))\n      if tries < 1 then set(Retry, 300) else ()\n      Waiting(tries + 1)\n    Ping ->\n      reset(Retry)\n      send(log, \"pinged, retry \" + (if active(Retry) then \"still on\" else \"off\"))\n      Waiting(tries)\n    Stop -> stop\n    Report ->\n      reply(Status(\"waiting \" + int_to_str(tries)))\n      stay\n\nfn not_a_tick(log) =\n  line = recv(log)\n  if starts_with(line, \"tick\") then not_a_tick(log) else line\n\nfn ask(w, env) =\n  post(w, env, Report)\n  match recv(env).signal\n    Status(text) -> text\n    _ -> \"?\"\n\nfn main() =\n  log = channel(64)\n  env = channel(16)\n  a = channel(16)\n  spawn node(a, log, Idle)\n  post(a, env, Start)\n  for i in 0..5\n    println(recv(log))\n  println(ask(a, env))\n  b = channel(16)\n  spawn node(b, log, Idle)\n  post(b, env, Start)\n  sleep_ms(5)\n  post(b, env, Ping)\n  println(not_a_tick(log))\n  sleep_ms(400)\n  println(ask(b, env))\n  post(b, env, Stop)\n";
     assert_eq!(
         run_source("timers", src),
         "tick 1\ntick 2\ntick 3\nretry 0, tick done\nretry 1, tick done\nwaiting 2\npinged, retry off\nwaiting 0\n"
@@ -5630,7 +5634,7 @@ fn a_machine_keeps_named_timers() {
     std::fs::write(dir.join("timers.rill"), src).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("timers.rill")).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("  Idle --> Waiting: Start / set Retry 45 ms, set Tick(1) 10 ms\n"), "{text}");
+    assert!(text.contains("  Idle --> Waiting: Start / set Retry 300 ms, set Tick(1) 10 ms\n"), "{text}");
     let types = Command::new(env!("CARGO_BIN_EXE_rill")).arg("types").arg(dir.join("timers.rill")).output().unwrap();
     let shown = String::from_utf8(types.stdout).unwrap();
     assert!(shown.contains("fn node(") && !shown.contains("node.run"), "{shown}");

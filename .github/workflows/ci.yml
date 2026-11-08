@@ -61,11 +61,10 @@ jobs:
 
       - name: Every test there is
         # Skipped: a GPU, the wasm runtime and Mac frameworks are not on every
-        # runner; a binary's size and a machine's timers depend on the machine.
+        # runner, and a binary's size depends on the machine.
         run: |
           python3 -m pip install --user --break-system-packages numpy
           cargo test --release -p rill_cli --test e2e -- --test-threads=2 \
             --skip opengl_offscreen_triangle \
             --skip every_example_in_the_repository_compiles \
-            --skip binaries_are_small_like_c \
-            --skip a_machine_keeps_named_timers ${{ matrix.skip }}
+            --skip binaries_are_small_like_c ${{ matrix.skip }}
